@@ -1,0 +1,106 @@
+name: Unlighthouse Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      site:
+        description: "Site URL to audit"
+        required: true
+        default: "https://nordal.dk"
+        type: string
+      device:
+        description: "Device type"
+        required: true
+        default: "mobile"
+        type: choice
+        options:
+          - mobile
+          - desktop
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install unlighthouse
+        run: npm install -g @unlighthouse/cli puppeteer
+
+      - name: Extract site name
+        id: site
+        run: |
+          SITE_NAME=$(echo "${{ inputs.site }}" | sed -E 's|https?://||' | sed 's|/.*||' | sed 's|www\.||')
+          DATE=$(date +%Y-%m-%d)
+          echo "name=${SITE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+          echo "path=${SITE_NAME}/${DATE}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Unlighthouse (mobile)
+        if: inputs.device == 'mobile'
+        run: |
+          unlighthouse-ci \
+            --site "${{ inputs.site }}" \
+            --build-static \
+            --max-routes 100
+
+      - name: Run Unlighthouse (desktop)
+        if: inputs.device == 'desktop'
+        run: |
+          unlighthouse-ci \
+            --site "${{ inputs.site }}" \
+            --build-static \
+            --max-routes 100 \
+            --desktop
+
+      - name: Prepare Pages deployment
+        run: |
+          mkdir -p deploy/${{ steps.site.outputs.path }}
+          cp -r .unlighthouse/* deploy/${{ steps.site.outputs.path }}/
+          cat > deploy/index.html << 'INDEXEOF'
+          <!DOCTYPE html>
+          <html>
+          <head><meta charset="utf-8"><title>8Kilo Audits</title></head>
+          <body>
+            <h1>8Kilo Audit Reports</h1>
+            <p>Navigate to a specific report path, e.g. <code>/site-name/2024-01-01/</code></p>
+          </body>
+          </html>
+          INDEXEOF
+
+      - name: Upload artifact for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: deploy
+
+      - name: Upload report as backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unlighthouse-report-${{ steps.site.outputs.name }}-${{ steps.site.outputs.date }}-${{ inputs.device }}
+          path: .unlighthouse/
+          retention-days: 90
+
+  deploy:
+    needs: audit
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
